@@ -1,0 +1,13 @@
+{
+  "name": "reading-room",
+  "title": "Reading Room",
+  "description": "Your own bookshelf and reading history, kept on the SD card. No account, no internet.",
+  "author": "l3luescreen",
+  "version": "0.1.0",
+  "mount": "settings",
+  "compatibility": {
+    "firmware_family": ["crosspoint"],
+    "plugin_api_min": 1
+  },
+  "files": ["manifest.json", "device.json", "plugin.js", "README.md"]
+}

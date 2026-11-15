@@ -1,0 +1,12 @@
+{
+  "title": "Reading Room",
+  "description": "Bookshelf and reading history. Open it on the reader's web page (Plugins).",
+  "events": {
+    "reader.session": {
+      "request": {
+        "method": "POST",
+        "url": "local://reading-room/keep"
+      }
+    }
+  }
+}
