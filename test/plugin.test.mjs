@@ -58,6 +58,8 @@ async function runPlugin(sd) {
   const api = {
     name: 'reading-room', dir: DIR,
     writeFile: async (path, b64) => {
+      // Like CrossPoint 2.0's /api/plugin-fs: an empty upload is refused.
+      if (!b64) throw new Error('/api/plugin-fs 400: empty body');
       writes.push(path);
       sd.set(path, Buffer.from(b64, 'base64').toString('utf8'));
       return { ok: true };
@@ -100,7 +102,8 @@ test('collects sessions, files them by month, and empties the outbox', async () 
   emit(sd, session('/Books/Dune.epub', 0, 0, 0, 0));  // no clock: cannot be stored
   const { text, writes, c } = await runPlugin(sd);
 
-  assert.equal(sd.get(OUTBOX), '', 'outbox emptied');
+  assert.equal(sd.get(OUTBOX), '\n', 'outbox emptied (one newline)');
+  assert.doesNotMatch(text, /Could not update/);
   const tiles = Object.fromEntries([...c.querySelectorAll('.rr-tile')].map((t) =>
     [t.lastChild.textContent, t.querySelector('b').textContent]));
   assert.equal(tiles['day streak'], '3');

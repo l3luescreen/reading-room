@@ -109,7 +109,7 @@ CrossPoint.registerPlugin(async (container, api) => {
   // ---------- step 1: move queued sessions into /Reading Room ----------
   async function collect() {
     const outbox = await readText(OUTBOX_PATH);
-    if (!outbox) return { added: 0, outboxBytes: 0 };
+    if (!outbox || !outbox.trim()) return { added: 0, outboxBytes: 0 };
     const events = parseLines(outbox).filter((ev) => ev && ev.e === 'reader.session');
     const sessions = events.map(toSession).filter(Boolean);
     // Sessions that can never be stored (no clock, no time read) are dropped too.
@@ -145,8 +145,10 @@ CrossPoint.registerPlugin(async (container, api) => {
         return false;  // a torn line can never be read
       }
     });
-    const rest = keep.length ? keep.join('\n') + '\n' : '';
-    if (again !== null && rest !== again) await writeText(OUTBOX_PATH, rest);
+    // The reader refuses an empty upload, so an emptied outbox is one newline
+    // (the reader skips blank lines).
+    const rest = keep.length ? keep.join('\n') + '\n' : '\n';
+    if (again !== null && rest.trim() !== again.trim()) await writeText(OUTBOX_PATH, rest);
     return { added, outboxBytes: new TextEncoder().encode(outbox).length };
   }
 
