@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { JSDOM } from 'jsdom';
 
 const PLUGIN_JS = readFileSync(new URL('../plugin/reading-room/plugin.js', import.meta.url), 'utf8');
@@ -19,8 +20,10 @@ function emit(sd, vars, ts = 1794700000) {
   sd.set(OUTBOX, cur + line);
   return line;
 }
+// The reader hashes file contents, so a renamed file keeps its hash.
+const docOf = (book) => createHash('md5').update(book.split('/').pop().replace(/ \(Herbert\)/, '')).digest('hex');
 const session = (book, start, seconds, from, to) => ({
-  book, document: '0123456789abcdef0123456789abcdef', start_time: String(start),
+  book, document: docOf(book), start_time: String(start),
   end_time: String(start + seconds), duration_seconds: String(seconds),
   start_progress_bp: String(from), end_progress_bp: String(to), progress_scale: '10000'
 });
@@ -164,4 +167,41 @@ test('an empty card still renders', async () => {
   const { text } = await runPlugin(new Map());
   assert.match(text, /No new reading sessions/);
   assert.match(text, /No books here yet/);
+});
+
+test('a book moved into another folder keeps its history and title', async () => {
+  const sd = card();
+  emit(sd, session('/Books/Dune.epub', now - DAY, 1200, 0, 1500));
+  await runPlugin(sd);
+  // Move it into a series folder, as the File Manager does.
+  sd.delete('/Books/Dune.epub');
+  sd.set('/Books/Dune Saga/Dune.epub', 'x');
+  const { c, text } = await runPlugin(sd);
+  const titles = [...c.querySelectorAll('.rr-book .rr-title')].map((n) => n.textContent);
+  assert.equal(titles.filter((t) => t === 'Dune').length, 1, 'one Dune on the shelf');
+  assert.doesNotMatch(text, /Not on the card/);
+  const dune = [...c.querySelectorAll('.rr-book')].find((n) => n.textContent.includes('Dune'));
+  assert.match(dune.textContent, /Frank Herbert/);
+  assert.match(dune.textContent, /20 min/);
+  // The stored history keeps the path it was read at.
+  const month = [...sd.keys()].find((k) => k.startsWith('/Reading Room/sessions/'));
+  assert.match(sd.get(month), /"book":"\/Books\/Dune.epub"/);
+});
+
+test('a renamed book is linked by its document hash once read again', async () => {
+  const sd = card();
+  emit(sd, session('/Books/Dune.epub', now - DAY, 1200, 0, 1500));
+  await runPlugin(sd);
+  sd.delete('/Books/Dune.epub');
+  sd.set('/Books/Dune (Herbert).epub', 'x');
+  emit(sd, session('/Books/Dune (Herbert).epub', now, 600, 1500, 1800));
+  const { c } = await runPlugin(sd);
+  const cards = [...c.querySelectorAll('.rr-book')].filter((n) => /Dune/.test(n.textContent));
+  assert.equal(cards.length, 1);
+  assert.match(cards[0].textContent, /Frank Herbert/);
+  assert.match(cards[0].textContent, /30 min/);
+  assert.match(cards[0].textContent, /18%/);
+  const tiles = Object.fromEntries([...c.querySelectorAll('.rr-tile')].map((t) =>
+    [t.lastChild.textContent, t.querySelector('b').textContent]));
+  assert.equal(tiles['books read'], '1');
 });

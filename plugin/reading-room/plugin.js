@@ -238,12 +238,62 @@ CrossPoint.registerPlugin(async (container, api) => {
     return { shelf, onCardSet };
   }
 
+  // ---------- moved books ----------
+  // A book moved or renamed on the card keeps its history. The stored files
+  // are not changed; old paths are linked to the current one for display:
+  // first by file name (a book moved into another folder), then by the
+  // document hash the reader sends with each session (a renamed book, once
+  // it has been read at its new path).
+  function linkMovedBooks(sessions, shelf, onCardSet) {
+    const alias = new Map();
+    const resolve = (p) => {
+      let cur = p;
+      for (let i = 0; i < 8 && alias.has(cur); i++) cur = alias.get(cur);
+      return cur;
+    };
+    const nameOf = (p) => p.split('/').pop().toLowerCase();
+    const onCardByName = new Map();
+    for (const p of onCardSet) {
+      const n = nameOf(p);
+      onCardByName.set(n, onCardByName.has(n) ? null : p);  // null: name not unique
+    }
+    const known = new Set(Object.keys(shelf.books).concat(sessions.map((x) => x.book)));
+    for (const p of known) {
+      if (onCardSet.has(p)) continue;
+      const target = onCardByName.get(nameOf(p));
+      if (target) alias.set(p, target);
+    }
+    const latestByDoc = new Map();
+    for (const x of sessions) {
+      if (!/^[0-9a-f]{32}$/.test(x.document || '')) continue;
+      const path = resolve(x.book);
+      const cur = latestByDoc.get(x.document);
+      const better = !cur || (onCardSet.has(path) && !onCardSet.has(cur.path)) ||
+        (onCardSet.has(path) === onCardSet.has(cur.path) && x.start_time >= cur.time);
+      if (better) latestByDoc.set(x.document, { path, time: x.start_time });
+    }
+    for (const x of sessions) {
+      const target = latestByDoc.get(x.document);
+      const path = resolve(x.book);
+      if (target && target.path !== path) alias.set(path, target.path);
+    }
+    const out = new Map();
+    for (const p of known) {
+      const r = resolve(p);
+      if (r !== p) out.set(p, r);
+    }
+    return out;
+  }
+
   // ---------- statistics ----------
   function summarize(sessions, shelf, onCardSet) {
+    const alias = linkMovedBooks(sessions, shelf, onCardSet);
+    const canonical = (p) => alias.get(p) || p;
     const perBook = new Map();
     const perDay = new Map();
     for (const s of sessions) {
-      const b = perBook.get(s.book) || { seconds: 0, sessions: 0, last: 0, first: Infinity, bp: 0, finishedAt: 0 };
+      const key = canonical(s.book);
+      const b = perBook.get(key) || { seconds: 0, sessions: 0, last: 0, first: Infinity, bp: 0, finishedAt: 0 };
       b.seconds += s.duration_seconds;
       b.sessions += 1;
       b.first = Math.min(b.first, s.start_time);
@@ -252,7 +302,7 @@ CrossPoint.registerPlugin(async (container, api) => {
         b.bp = s.end_progress_bp;
       }
       if (s.end_progress_bp >= FINISHED_BP && !b.finishedAt) b.finishedAt = s.end_time;
-      perBook.set(s.book, b);
+      perBook.set(key, b);
       const day = dayKey(new Date(s.start_time * 1000));
       perDay.set(day, (perDay.get(day) || 0) + s.duration_seconds);
     }
@@ -268,10 +318,23 @@ CrossPoint.registerPlugin(async (container, api) => {
     const thisYear = sessions.filter((s) => new Date(s.start_time * 1000).getFullYear() === year);
     const finishedThisYear = [...perBook.values()]
       .filter((b) => b.finishedAt && new Date(b.finishedAt * 1000).getFullYear() === year).length;
-    const books = Object.entries(shelf.books).map(([path, meta]) => Object.assign(
-      { path, onCard: onCardSet.has(path) }, meta, { stats: perBook.get(path) || null }));
+    // Old paths fold into the current entry; a real title beats a file name.
+    const merged = new Map();
+    for (const [path, meta] of Object.entries(shelf.books)) {
+      const key = canonical(path);
+      const into = merged.get(key) || {};
+      const better = (k) => meta[k] && (!into[k] || (k === 'title' && into[k] === fileTitle(key) && path !== key));
+      for (const k of ['title', 'author']) if (better(k)) into[k] = meta[k];
+      if (path === key && meta.cover) into.cover = meta.cover;
+      if (meta.added && (!into.added || meta.added < into.added)) into.added = meta.added;
+      merged.set(key, into);
+    }
+    for (const key of perBook.keys()) if (!merged.has(key)) merged.set(key, { title: fileTitle(key), author: '' });
+    const books = [...merged].map(([path, meta]) => Object.assign(
+      { path, onCard: onCardSet.has(path), title: fileTitle(path), author: '' }, meta,
+      { stats: perBook.get(path) || null, formerPaths: [...alias].filter(([, to]) => to === path).map(([from]) => from) }));
     return {
-      books, perDay, streak,
+      books, perDay, streak, canonical,
       totalSeconds: sessions.reduce((a, s) => a + s.duration_seconds, 0),
       yearSeconds: thisYear.reduce((a, s) => a + s.duration_seconds, 0),
       finishedThisYear,
@@ -411,10 +474,12 @@ CrossPoint.registerPlugin(async (container, api) => {
     if (!list.length) shelfEl.append(el('p', { class: 'rr-meta', textContent: 'No books here yet.' }));
   }
   function showBook(b) {
-    const rows = sessions.filter((s) => s.book === b.path).reverse();
+    const rows = sessions.filter((s) => data.canonical(s.book) === b.path).reverse();
     detail.replaceChildren(
       el('h3', { textContent: b.title }),
       el('p', { class: 'rr-meta', textContent: b.path }),
+      b.formerPaths.length
+        ? el('p', { class: 'rr-meta', textContent: 'Earlier at: ' + b.formerPaths.join(', ') }) : null,
       rows.length
         ? el('table', { class: 'rr-table' },
           el('tr', {}, ...['Date', 'Time read', 'Progress'].map((t) => el('th', { textContent: t }))),
@@ -441,7 +506,7 @@ CrossPoint.registerPlugin(async (container, api) => {
     const titles = new Map(data.books.map((b) => [b.path, b]));
     const header = ['start', 'end', 'minutes', 'title', 'author', 'book', 'from_percent', 'to_percent'];
     const lines = sessions.map((s) => {
-      const b = titles.get(s.book) || {};
+      const b = titles.get(data.canonical(s.book)) || {};
       return [new Date(s.start_time * 1000).toISOString(), new Date(s.end_time * 1000).toISOString(),
         (s.duration_seconds / 60).toFixed(1), b.title || '', b.author || '', s.book,
         (s.start_progress_bp / 100).toFixed(1), (s.end_progress_bp / 100).toFixed(1)].map(csvCell).join(',');

@@ -3,7 +3,7 @@
   "title": "Reading Room",
   "description": "Your own bookshelf and reading history, kept on the SD card. No account, no internet.",
   "author": "l3luescreen",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "mount": "settings",
   "compatibility": {
     "firmware_family": ["crosspoint"],
